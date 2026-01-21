@@ -1,46 +1,82 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+import requests
+import base64
 import json
-from datetime import datetime
+import os
 
 app = FastAPI()
 
-LICENSE_FILE = "licenses.json"
+# ================= CONFIG =================
+GITHUB_OWNER = "GestaoHoras"
+GITHUB_REPO = "axion-licenses"
+GITHUB_BRANCH = "main"
+LICENSES_PATH = "licenses"
+GITHUB_API = "https://api.github.com"
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+
+HEADERS = {
+    "Authorization": f"Bearer {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github+json"
+}
+# =========================================
+
 
 class LicensePayload(BaseModel):
     license: str
     hwid: str
 
-def load_licenses():
-    with open(LICENSE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
 
-def save_licenses(data):
-    with open(LICENSE_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+def load_license(license_key: str):
+    url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{LICENSES_PATH}/{license_key}.json"
+    r = requests.get(url, headers=HEADERS, timeout=10)
+
+    if r.status_code != 200:
+        return None, None
+
+    data = r.json()
+    content = json.loads(
+        base64.b64decode(data["content"]).decode("utf-8")
+    )
+    return content, data["sha"]
+
+
+def save_license(license_key: str, content: dict, sha: str):
+    url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{LICENSES_PATH}/{license_key}.json"
+
+    payload = {
+        "message": f"bind hwid {license_key}",
+        "content": base64.b64encode(
+            json.dumps(content, indent=2).encode()
+        ).decode(),
+        "sha": sha,
+        "branch": GITHUB_BRANCH
+    }
+
+    r = requests.put(url, headers=HEADERS, json=payload, timeout=10)
+    return r.status_code in (200, 201)
+
 
 @app.post("/license/check")
 def check_license(payload: LicensePayload):
-    licenses = load_licenses()
+    license_key = payload.license
+    hwid = payload.hwid
 
-    lic = licenses.get(payload.license)
-    if not lic:
+    license_data, sha = load_license(license_key)
+    if not license_data:
         return {"status": "invalid"}
 
-    if lic["status"] != "active":
-        return {"status": "revoked"}
+    if license_data.get("status") != "active":
+        return {"status": "inactive"}
 
-    if lic.get("expires"):
-        if datetime.fromisoformat(lic["expires"]) < datetime.utcnow():
-            return {"status": "expired"}
+    # primeira ativação → grava HWID
+    if not license_data.get("hwid"):
+        license_data["hwid"] = hwid
+        save_license(license_key, license_data, sha)
+        return {"status": "ok"}
 
-    # 🔐 bind automático do HWID na primeira ativação
-    if not lic.get("hwid"):
-        lic["hwid"] = payload.hwid
-        save_licenses(licenses)
-        return {"status": "bound"}
-
-    if lic["hwid"] != payload.hwid:
+    # HWID diferente
+    if license_data["hwid"] != hwid:
         return {"status": "hwid"}
 
     return {"status": "ok"}
