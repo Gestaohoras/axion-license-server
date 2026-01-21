@@ -1,8 +1,10 @@
 import requests
 import base64
 import json
+import os
 
-GITHUB_TOKEN = "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"
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+
 OWNER = "Gestaohoras"
 REPO = "axion-licenses"
 BRANCH = "main"
